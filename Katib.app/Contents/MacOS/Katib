@@ -1,0 +1,27 @@
+#!/bin/bash
+# Katib Application Launcher
+# Shell script launcher that ensures proper GUI display on macOS
+
+# Set up environment
+export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+export PYTHONUNBUFFERED=1
+
+# Find the Katib directory
+KATIB_DIR="$HOME/Katib"
+
+# Verify katib.py exists
+if [ ! -f "$KATIB_DIR/katib.py" ]; then
+    osascript -e 'display dialog "Error: Could not find katib.py" buttons {"OK"} default button "OK" with icon stop'
+    exit 1
+fi
+
+# Change to Katib directory
+cd "$KATIB_DIR" || exit 1
+
+# Activate virtual environment if it exists
+if [ -f "$KATIB_DIR/venv/bin/activate" ]; then
+    source "$KATIB_DIR/venv/bin/activate"
+fi
+
+# Run the application - use exec to replace this process
+exec python3 "$KATIB_DIR/katib.py"
