@@ -251,6 +251,40 @@ Logs are stored in `~/Documents/Katib/logs/`:
 - Stuck downloads (status: downloading) are reset to pending on app launch
 - Queue processing continues in background threads
 
+## Changelog
+
+### 2025-01-05 - Bug Fixes and Performance Improvements
+
+**Critical Bug Fix: Duplicate Episode Detection**
+- **Issue**: The `check_new_episodes()` function was not checking `download_history` when determining if episodes were already downloaded. This caused episodes to be re-added to the queue even after successful downloads, especially after the queue was cleaned of completed items.
+- **Fix**: Enhanced `check_new_episodes()` to check `download_history` in addition to the queue and failed downloads. Now matches episodes by `episode_id`, `episode_url`, and `episode_title` to catch duplicates even if some fields differ.
+- **Impact**: Prevents duplicate episodes from being added to the download queue. Episodes that have already been downloaded (recorded in history) will no longer appear as "new" when checking RSS feeds.
+
+**New Features:**
+- **Clean Duplicates Button**: Added automatic cleanup on startup and a manual "Clean Duplicates" button to remove queue items that are already in download history.
+- **Clear Queue Button**: Added ability to clear all items from the download queue with confirmation dialog.
+- **View Queue Details**: Added detailed queue viewer window showing all pending, downloading, and failed items organized by status.
+- **Enhanced Queue Display**: Increased visibility of pending items (now shows up to 20 instead of 5) in the main status panel.
+
+**Performance Improvements:**
+- **Optimized Podcast List Selection**: Added display cache to prevent unnecessary listbox refreshes. The podcast list now only updates when data actually changes, preserving user selection and scroll position.
+- **Improved Refresh Logic**: Periodic refreshes (every 30 seconds) now skip updates when no data has changed, reducing UI lag.
+
+**UI Improvements:**
+- **Larger Default Window**: Increased default window size from 900x700 to 1200x800 for better visibility and usability.
+- **Better Queue Status Display**: Enhanced queue status to show more pending items and indicate when there are more items available.
+
+**Technical Changes:**
+- Enhanced `download_history` entries to include `episode_id` and `episode_url` for better duplicate detection.
+- Added `cleanup_duplicate_queue_items()` function in `katib_downloader.py`.
+- Added `cleanup_duplicates()`, `clear_queue()`, and `show_queue_details()` methods in `katib.py`.
+- Added display caching mechanism to reduce unnecessary UI updates.
+
+**For Future Agents:**
+- The duplicate detection now relies on three matching criteria: episode_id, episode_url, and episode_title. All three are checked against download_history, queue, and failed_downloads.
+- The cleanup functions are safe to run - they only remove items from the queue, never delete downloaded files or history.
+- The display cache (`podcasts_display_cache`) prevents unnecessary listbox refreshes. If you modify the podcast list display format, remember to invalidate this cache or update the comparison logic.
+
 ## License
 
 This project is provided as-is for personal use.

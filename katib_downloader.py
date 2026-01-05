@@ -374,15 +374,31 @@ def check_new_episodes(podcast_name, rss_url):
     
     # Get existing episode IDs for this podcast
     existing_ids = set()
+    existing_urls = set()
+    existing_titles = set()
+    
+    # Check download queue
     for item in config.get('download_queue', []):
         if item.get('podcast_name') == podcast_name:
             existing_ids.add(item.get('episode_id', ''))
+            existing_urls.add(item.get('episode_url', ''))
+            existing_titles.add(item.get('episode_title', ''))
     
+    # Check failed downloads
     for item in config.get('failed_downloads', []):
         if item.get('podcast_name') == podcast_name:
             existing_ids.add(item.get('episode_id', ''))
+            existing_urls.add(item.get('episode_url', ''))
+            existing_titles.add(item.get('episode_title', ''))
     
-    # Check if episodes are already downloaded
+    # Check download history (this is the key fix - previously missing!)
+    history = config.get('download_history', {}).get(podcast_name, [])
+    for entry in history:
+        existing_ids.add(entry.get('episode_id', ''))
+        existing_urls.add(entry.get('episode_url', ''))
+        existing_titles.add(entry.get('episode_title', ''))
+    
+    # Check if episodes are already downloaded (by filename)
     podcast_dir = PODCASTS_DIR / sanitize_filename(podcast_name)
     if podcast_dir.exists():
         for file in podcast_dir.glob('*.mp3'):
@@ -393,7 +409,13 @@ def check_new_episodes(podcast_name, rss_url):
     new_count = 0
     for episode in episodes:
         episode_id = episode.get('episode_id', episode.get('url', ''))
-        if episode_id not in existing_ids:
+        episode_url = episode.get('url', '')
+        episode_title = episode.get('title', '')
+        
+        # Check if already exists by ID, URL, or title
+        if (episode_id not in existing_ids and 
+            episode_url not in existing_urls and 
+            episode_title not in existing_titles):
             queue_item = {
                 "podcast_name": podcast_name,
                 "episode_title": episode['title'],
@@ -410,6 +432,59 @@ def check_new_episodes(podcast_name, rss_url):
     save_config(config)
     logger.info(f"Added {new_count} new episodes to queue for {podcast_name}")
     return new_count
+
+
+def cleanup_duplicate_queue_items():
+    """Remove items from download queue that are already in download_history."""
+    config = load_config()
+    queue = config.get('download_queue', [])
+    history = config.get('download_history', {})
+    
+    if not queue:
+        return 0
+    
+    # Build sets of already-downloaded episodes per podcast
+    downloaded_by_podcast = {}
+    for podcast_name, downloads in history.items():
+        downloaded_by_podcast[podcast_name] = {
+            'ids': set(),
+            'urls': set(),
+            'titles': set()
+        }
+        for entry in downloads:
+            downloaded_by_podcast[podcast_name]['ids'].add(entry.get('episode_id', ''))
+            downloaded_by_podcast[podcast_name]['urls'].add(entry.get('episode_url', ''))
+            downloaded_by_podcast[podcast_name]['titles'].add(entry.get('episode_title', ''))
+    
+    # Remove duplicates from queue
+    removed_count = 0
+    items_to_remove = []
+    
+    for item in queue:
+        podcast_name = item.get('podcast_name', '')
+        if podcast_name in downloaded_by_podcast:
+            episode_id = item.get('episode_id', '')
+            episode_url = item.get('episode_url', '')
+            episode_title = item.get('episode_title', '')
+            
+            downloaded = downloaded_by_podcast[podcast_name]
+            # Check if already downloaded by ID, URL, or title
+            if (episode_id in downloaded['ids'] or 
+                episode_url in downloaded['urls'] or 
+                episode_title in downloaded['titles']):
+                items_to_remove.append(item)
+                removed_count += 1
+    
+    # Remove duplicates
+    for item in items_to_remove:
+        if item in config['download_queue']:
+            config['download_queue'].remove(item)
+    
+    if removed_count > 0:
+        save_config(config)
+        logger.info(f"Removed {removed_count} duplicate items from download queue")
+    
+    return removed_count
 
 
 def process_download_queue():
@@ -489,6 +564,8 @@ def process_download_queue():
             
             history_entry = {
                 "episode_title": episode_title,
+                "episode_url": episode_url,
+                "episode_id": item.get('episode_id', ''),
                 "published_date": published_date,
                 "downloaded_at": datetime.now().isoformat(),
                 "filename": filename

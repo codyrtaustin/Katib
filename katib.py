@@ -24,7 +24,8 @@ LOGS_DIR = BASE_DIR / "logs"
 sys.path.insert(0, str(Path(__file__).parent))
 from katib_downloader import (
     load_config, save_config, check_new_episodes,
-    process_download_queue, sanitize_filename, parse_rss_feed
+    process_download_queue, sanitize_filename, parse_rss_feed,
+    cleanup_duplicate_queue_items
 )
 
 
@@ -32,7 +33,7 @@ class KatibGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Katib - Podcast Downloader")
-        self.root.geometry("900x700")
+        self.root.geometry("1200x800")
         
         # Variables
         self.rss_url_var = tk.StringVar()
@@ -41,12 +42,15 @@ class KatibGUI:
         self.queue_processing = False
         self.refresh_scheduled = False  # Prevent multiple refresh calls
         self.config_cache = None  # Cache config to reduce file reads
+        self.podcasts_display_cache = None  # Cache podcast display strings to avoid unnecessary updates
         
         # Setup UI
         self.setup_ui()
         
         # Load initial data (force reload on startup to get latest counts)
         self.refresh_podcasts(force_reload=True)
+        # Clean up duplicates on startup
+        self.cleanup_duplicates(silent=True)
         self.refresh_queue_status(force_reload=True)
         self.refresh_failed_downloads()
         
@@ -117,6 +121,9 @@ class KatibGUI:
         action_frame.pack(fill=tk.X, pady=5)
         
         ttk.Button(action_frame, text="Download Now", command=self.download_now).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_frame, text="Clean Duplicates", command=self.cleanup_duplicates).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_frame, text="View Queue Details", command=self.show_queue_details).pack(side=tk.LEFT, padx=2)
+        ttk.Button(action_frame, text="Clear Queue", command=self.clear_queue).pack(side=tk.LEFT, padx=2)
         
         # Failed Downloads Section
         failed_frame = ttk.LabelFrame(main_frame, text="Failed Downloads", padding="10")
@@ -156,10 +163,30 @@ class KatibGUI:
                 display = f"{name} ({downloaded}/{total} downloaded)"
                 displays.append(display)
             
+            # Only update if data actually changed (prevents unnecessary listbox refresh)
+            if displays == self.podcasts_display_cache:
+                return  # No changes, skip update
+            
+            # Preserve selection and scroll position
+            selection = self.podcasts_listbox.curselection()
+            selected_index = selection[0] if selection else None
+            scroll_pos = self.podcasts_listbox.yview()
+            
             # Batch listbox updates
             self.podcasts_listbox.delete(0, tk.END)
             if displays:
                 self.podcasts_listbox.insert(0, *displays)
+            
+            # Restore selection if it was valid
+            if selected_index is not None and selected_index < len(displays):
+                self.podcasts_listbox.selection_set(selected_index)
+                self.podcasts_listbox.see(selected_index)
+            # Restore scroll position
+            elif scroll_pos[0] > 0:
+                self.podcasts_listbox.yview_moveto(scroll_pos[0])
+            
+            # Update cache
+            self.podcasts_display_cache = displays
         except Exception:
             pass  # Silently fail
     
@@ -188,7 +215,8 @@ class KatibGUI:
                         downloading_items.append(q)
                 elif status == 'pending':
                     status_counts['pending'] += 1
-                    if len(pending_items) < 5:
+                    # Show all pending items (or up to 20 for performance)
+                    if len(pending_items) < 20:
                         pending_items.append(q)
                 elif status == 'failed':
                     status_counts['failed'] += 1
@@ -217,6 +245,8 @@ class KatibGUI:
                 text_content.append(f"\nNext {len(pending_items)} in Queue:\n")
                 for item in pending_items:
                     text_content.append(f"  • {item['podcast_name']}: {item['episode_title'][:40]}...\n")
+                if status_counts['pending'] > len(pending_items):
+                    text_content.append(f"  ... and {status_counts['pending'] - len(pending_items)} more (click 'View Queue Details' to see all)\n")
             elif status_counts['pending'] == 0 and status_counts['downloading'] == 0:
                 text_content.append("\nAll downloads complete!\n")
             
@@ -523,6 +553,62 @@ class KatibGUI:
         self.root.after(50, self.refresh_failed_downloads)
         messagebox.showinfo("Success", "Failed download moved back to queue")
     
+    def cleanup_duplicates(self, silent=False):
+        """Remove duplicate items from download queue that are already downloaded."""
+        try:
+            removed_count = cleanup_duplicate_queue_items()
+            if removed_count > 0:
+                self.config_cache = None  # Invalidate cache
+                self.refresh_queue_status(force_reload=True)
+                if not silent:
+                    messagebox.showinfo("Cleanup Complete", f"Removed {removed_count} duplicate item(s) from download queue")
+            elif not silent:
+                messagebox.showinfo("Cleanup Complete", "No duplicates found in download queue")
+        except Exception as e:
+            if not silent:
+                messagebox.showerror("Error", f"Failed to cleanup duplicates:\n{str(e)}")
+    
+    def clear_queue(self):
+        """Clear items from the download queue."""
+        config = load_config()
+        queue = config.get('download_queue', [])
+        
+        if not queue:
+            messagebox.showinfo("Clear Queue", "Download queue is already empty.")
+            return
+        
+        # Count items by status
+        pending_count = len([q for q in queue if q.get('status') == 'pending'])
+        downloading_count = len([q for q in queue if q.get('status') == 'downloading'])
+        failed_count = len([q for q in queue if q.get('status') == 'failed'])
+        
+        # Build confirmation message
+        status_parts = []
+        if pending_count > 0:
+            status_parts.append(f"{pending_count} pending")
+        if downloading_count > 0:
+            status_parts.append(f"{downloading_count} downloading")
+        if failed_count > 0:
+            status_parts.append(f"{failed_count} failed")
+        
+        status_msg = ", ".join(status_parts) if status_parts else "0 items"
+        
+        response = messagebox.askyesno(
+            "Clear Download Queue",
+            f"Clear all items from the download queue?\n\n"
+            f"Current queue: {status_msg}\n"
+            f"Total items: {len(queue)}\n\n"
+            f"Note: This will not delete downloaded files or history."
+        )
+        
+        if response:
+            # Clear the queue
+            config['download_queue'] = []
+            save_config(config)
+            self.config_cache = None  # Invalidate cache
+            self.refresh_queue_status(force_reload=True)
+            messagebox.showinfo("Queue Cleared", f"Removed {len(queue)} item(s) from download queue.")
+    
     def auto_backfill_history(self):
         """Automatically backfill history from existing files if history is empty."""
         try:
@@ -610,6 +696,67 @@ class KatibGUI:
         
         # Close button
         close_btn = ttk.Button(history_window, text="Close", command=history_window.destroy)
+        close_btn.pack(pady=5)
+    
+    def show_queue_details(self):
+        """Show detailed view of all items in the download queue."""
+        config = load_config()
+        queue = config.get('download_queue', [])
+        
+        if not queue:
+            messagebox.showinfo("Queue Details", "Download queue is empty.")
+            return
+        
+        # Create queue details window
+        queue_window = tk.Toplevel(self.root)
+        queue_window.title("Download Queue Details")
+        queue_window.geometry("900x600")
+        
+        # Create notebook for tabs by status
+        notebook = ttk.Notebook(queue_window)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Organize items by status
+        by_status = {'pending': [], 'downloading': [], 'failed': [], 'completed': []}
+        for item in queue:
+            status = item.get('status', 'pending')
+            by_status.setdefault(status, []).append(item)
+        
+        # Create tab for each status that has items
+        for status in ['pending', 'downloading', 'failed']:
+            items = by_status.get(status, [])
+            if not items:
+                continue
+            
+            # Create frame for this status
+            status_frame = ttk.Frame(notebook)
+            notebook.add(status_frame, text=f"{status.capitalize()} ({len(items)})")
+            
+            # Create scrollable listbox
+            scroll = ttk.Scrollbar(status_frame)
+            scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            listbox = tk.Listbox(status_frame, yscrollcommand=scroll.set, font=('Courier', 10))
+            listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scroll.config(command=listbox.yview)
+            
+            # Add items to listbox
+            for item in items:
+                podcast_name = item.get('podcast_name', 'Unknown')
+                episode_title = item.get('episode_title', 'Unknown')
+                published_date = item.get('published_date', 'Unknown')
+                retry_count = item.get('retry_count', 0)
+                
+                # Format display
+                if status == 'failed':
+                    display = f"{podcast_name} | {episode_title[:60]}... | Retries: {retry_count}"
+                else:
+                    display = f"{podcast_name} | {published_date} | {episode_title[:60]}..."
+                
+                listbox.insert(tk.END, display)
+        
+        # Close button
+        close_btn = ttk.Button(queue_window, text="Close", command=queue_window.destroy)
         close_btn.pack(pady=5)
     
     def periodic_refresh(self):
