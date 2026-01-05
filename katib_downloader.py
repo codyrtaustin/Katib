@@ -53,6 +53,69 @@ def sanitize_filename(name, max_length=200):
     return name
 
 
+def create_safe_filepath(podcast_name, episode_title, published_date, base_dir=PODCASTS_DIR):
+    """Create a safe filepath that fits within filesystem limits.
+    
+    On macOS: max path length is 1024 chars, max filename is 255 chars.
+    We'll ensure the full path stays under 1024 chars and filename under 255.
+    """
+    # Sanitize podcast name (directory name)
+    safe_podcast = sanitize_filename(podcast_name, max_length=100)
+    podcast_dir = base_dir / safe_podcast
+    
+    # Calculate available space for filename
+    # Format: "{podcast} - {date} - {title}.mp3"
+    # Reserve space for: " - " (3) + date (10) + " - " (3) + ".mp3" (4) = 20 chars
+    date_part = published_date  # YYYY-MM-DD = 10 chars
+    prefix = f"{safe_podcast} - {date_part} - "
+    suffix = ".mp3"
+    
+    # Calculate max filename length (255 chars for filename, but we need to account for full path)
+    # Full path = base_dir + "/" + safe_podcast + "/" + filename
+    base_path_len = len(str(podcast_dir)) + 1  # +1 for the "/" separator
+    max_path_len = 1024  # macOS max path length
+    max_filename_len = min(255, max_path_len - base_path_len - 1)  # -1 for safety
+    
+    # Calculate available space for title
+    available_for_title = max_filename_len - len(prefix) - len(suffix)
+    
+    # Ensure we have at least some space for title (minimum 20 chars)
+    if available_for_title < 20:
+        # If path is too long, truncate podcast name more aggressively
+        safe_podcast = sanitize_filename(podcast_name, max_length=50)
+        podcast_dir = base_dir / safe_podcast
+        prefix = f"{safe_podcast} - {date_part} - "
+        base_path_len = len(str(podcast_dir)) + 1
+        available_for_title = min(255, max_path_len - base_path_len - 1) - len(prefix) - len(suffix)
+    
+    # Sanitize and truncate title to fit
+    safe_title = sanitize_filename(episode_title, max_length=max(20, available_for_title))
+    
+    # Build filename
+    filename = f"{safe_podcast} - {date_part} - {safe_title}.mp3"
+    
+    # Final safety check - truncate if still too long
+    if len(filename) > 255:
+        # Truncate title more aggressively
+        excess = len(filename) - 255
+        safe_title = safe_title[:len(safe_title) - excess - 3] + "..."
+        filename = f"{safe_podcast} - {date_part} - {safe_title}.mp3"
+    
+    filepath = podcast_dir / filename
+    
+    # Final path length check
+    full_path = str(filepath)
+    if len(full_path) > 1024:
+        # Emergency truncation - use a hash for very long paths
+        import hashlib
+        title_hash = hashlib.md5(episode_title.encode()).hexdigest()[:8]
+        safe_title = f"{safe_title[:50]}...{title_hash}" if len(safe_title) > 50 else safe_title
+        filename = f"{safe_podcast} - {date_part} - {safe_title}.mp3"
+        filepath = podcast_dir / filename
+    
+    return filepath, filename
+
+
 def load_config():
     """Load configuration from JSON file."""
     if not CONFIG_FILE.exists():
@@ -224,16 +287,23 @@ def download_file(url, filepath, progress_callback=None):
         headers = {k: v for k, v in headers.items() if v is not None}
         
         # Check if file already exists and is complete
-        if filepath.exists():
-            # Try to get file size from server
-            head_response = requests.head(url, headers=headers, allow_redirects=True, timeout=10)
-            if head_response.status_code == 200:
-                content_length = head_response.headers.get('content-length')
-                if content_length:
-                    existing_size = filepath.stat().st_size
-                    if existing_size == int(content_length):
-                        logger.info(f"File already exists and is complete: {filepath.name}")
-                        return True
+        try:
+            if filepath.exists():
+                # Try to get file size from server
+                head_response = requests.head(url, headers=headers, allow_redirects=True, timeout=10)
+                if head_response.status_code == 200:
+                    content_length = head_response.headers.get('content-length')
+                    if content_length:
+                        existing_size = filepath.stat().st_size
+                        if existing_size == int(content_length):
+                            logger.info(f"File already exists and is complete: {filepath.name}")
+                            return True
+        except OSError as e:
+            if "File name too long" in str(e) or e.errno == 63:
+                # Path is too long, can't check if exists, proceed with download
+                logger.warning(f"Path too long to check existence, proceeding with download: {e}")
+            else:
+                raise
         
         # Start download
         response = requests.get(url, headers=headers, stream=True, timeout=30, allow_redirects=True)
@@ -371,19 +441,37 @@ def process_download_queue():
         episode_url = item['episode_url']
         published_date = item['published_date']
         
-        # Create filename
-        safe_podcast = sanitize_filename(podcast_name)
-        safe_title = sanitize_filename(episode_title)
-        filename = f"{safe_podcast} - {published_date} - {safe_title}.mp3"
-        filepath = PODCASTS_DIR / safe_podcast / filename
+        # Create safe filepath that fits within filesystem limits
+        try:
+            filepath, filename = create_safe_filepath(podcast_name, episode_title, published_date)
+        except Exception as e:
+            logger.error(f"Error creating safe filepath: {e}")
+            # Fallback to old method with aggressive truncation
+            safe_podcast = sanitize_filename(podcast_name, max_length=50)
+            safe_title = sanitize_filename(episode_title, max_length=100)
+            filename = f"{safe_podcast} - {published_date} - {safe_title}.mp3"
+            filepath = PODCASTS_DIR / safe_podcast / filename
         
-        # Skip if already exists
-        if filepath.exists():
-            logger.info(f"File already exists, marking as completed: {filename}")
-            item['status'] = 'completed'
-            save_config(config)
-            completed += 1
-            continue
+        # Skip if already exists (use try/except to handle path length errors)
+        try:
+            if filepath.exists():
+                logger.info(f"File already exists, marking as completed: {filename}")
+                item['status'] = 'completed'
+                save_config(config)
+                completed += 1
+                continue
+        except OSError as e:
+            if "File name too long" in str(e) or e.errno == 63:
+                # Path is too long, need to use shorter filename
+                logger.warning(f"Path too long, using shorter filename: {e}")
+                # Use hash-based filename as fallback
+                import hashlib
+                title_hash = hashlib.md5(episode_title.encode()).hexdigest()[:12]
+                safe_podcast = sanitize_filename(podcast_name, max_length=50)
+                filename = f"{safe_podcast} - {published_date} - {title_hash}.mp3"
+                filepath = PODCASTS_DIR / safe_podcast / filename
+            else:
+                raise
         
         # Mark as downloading
         item['status'] = 'downloading'

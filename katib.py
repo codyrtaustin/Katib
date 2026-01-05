@@ -39,13 +39,15 @@ class KatibGUI:
         self.podcast_name_var = tk.StringVar()
         self.downloading = False
         self.queue_processing = False
+        self.refresh_scheduled = False  # Prevent multiple refresh calls
+        self.config_cache = None  # Cache config to reduce file reads
         
         # Setup UI
         self.setup_ui()
         
-        # Load initial data
-        self.refresh_podcasts()
-        self.refresh_queue_status()
+        # Load initial data (force reload on startup to get latest counts)
+        self.refresh_podcasts(force_reload=True)
+        self.refresh_queue_status(force_reload=True)
         self.refresh_failed_downloads()
         
         # Auto-backfill history if empty but files exist
@@ -135,83 +137,121 @@ class KatibGUI:
         main_frame.rowconfigure(1, weight=1)
         main_frame.rowconfigure(2, weight=1)
     
-    def refresh_podcasts(self):
+    def refresh_podcasts(self, force_reload=False):
         """Refresh the podcasts list."""
-        config = load_config()
-        self.podcasts_listbox.delete(0, tk.END)
-        
-        for podcast in config.get('podcasts', []):
-            name = podcast['name']
-            total = podcast.get('total_episodes', 0)
-            downloaded = podcast.get('downloaded_count', 0)
-            display = f"{name} ({downloaded}/{total} downloaded)"
-            self.podcasts_listbox.insert(tk.END, display)
+        try:
+            # Use cache if available and not forcing reload
+            if force_reload or self.config_cache is None:
+                config = load_config()
+                self.config_cache = config
+            else:
+                config = self.config_cache
+            
+            podcasts = config.get('podcasts', [])
+            displays = []
+            for podcast in podcasts:
+                name = podcast['name']
+                total = podcast.get('total_episodes', 0)
+                downloaded = podcast.get('downloaded_count', 0)
+                display = f"{name} ({downloaded}/{total} downloaded)"
+                displays.append(display)
+            
+            # Batch listbox updates
+            self.podcasts_listbox.delete(0, tk.END)
+            if displays:
+                self.podcasts_listbox.insert(0, *displays)
+        except Exception:
+            pass  # Silently fail
     
-    def refresh_queue_status(self):
+    def refresh_queue_status(self, force_reload=False):
         """Refresh the download queue status display."""
         try:
-            # Force reload config to get latest data
-            config = load_config()
+            # Use cache if available and not forcing reload
+            if force_reload or self.config_cache is None:
+                config = load_config()
+                self.config_cache = config
+            else:
+                config = self.config_cache
+            
             queue = config.get('download_queue', [])
             
-            # Count statuses efficiently
-            status_counts = {'pending': 0, 'downloading': 0, 'completed': 0, 'failed': 0}
+            # Count statuses efficiently - only count what we need
+            status_counts = {'pending': 0, 'downloading': 0, 'failed': 0}
             downloading_items = []
             pending_items = []
             
             for q in queue:
                 status = q.get('status', 'pending')
-                if status in status_counts:
-                    status_counts[status] += 1
-                if status == 'downloading' and len(downloading_items) < 3:
-                    downloading_items.append(q)
-                elif status == 'pending' and len(pending_items) < 5:
-                    pending_items.append(q)
+                if status == 'downloading':
+                    status_counts['downloading'] += 1
+                    if len(downloading_items) < 3:
+                        downloading_items.append(q)
+                elif status == 'pending':
+                    status_counts['pending'] += 1
+                    if len(pending_items) < 5:
+                        pending_items.append(q)
+                elif status == 'failed':
+                    status_counts['failed'] += 1
             
-            # Update UI efficiently
-            self.queue_status_text.delete(1.0, tk.END)
+            # Update UI efficiently - batch text operations
+            text_content = []
+            text_content.append("Current Queue Status:\n")
+            text_content.append(f"  Pending: {status_counts['pending']}\n")
+            text_content.append(f"  Downloading: {status_counts['downloading']}\n")
+            text_content.append(f"  Failed: {status_counts['failed']}\n\n")
             
-            self.queue_status_text.insert(tk.END, f"Current Queue Status:\n")
-            self.queue_status_text.insert(tk.END, f"  Pending: {status_counts['pending']}\n")
-            self.queue_status_text.insert(tk.END, f"  Downloading: {status_counts['downloading']}\n")
-            self.queue_status_text.insert(tk.END, f"  Failed: {status_counts['failed']}\n\n")
-            
-            # Show download history summary per podcast
+            # Show download history summary (lightweight - just counts)
             history = config.get('download_history', {})
             if history:
-                self.queue_status_text.insert(tk.END, "Download History (Recent):\n")
-                for podcast_name, downloads in list(history.items())[:5]:  # Show first 5 podcasts
-                    recent = sorted(downloads, key=lambda x: x.get('downloaded_at', ''), reverse=True)[:3]
-                    self.queue_status_text.insert(tk.END, f"  {podcast_name}: {len(downloads)} total, {len(recent)} recent\n")
-                self.queue_status_text.insert(tk.END, "\n")
+                text_content.append("Download History:\n")
+                for podcast_name, downloads in list(history.items())[:5]:
+                    text_content.append(f"  {podcast_name}: {len(downloads)} total\n")
+                text_content.append("\n")
             
             if downloading_items:
-                self.queue_status_text.insert(tk.END, "Currently Downloading:\n")
+                text_content.append("Currently Downloading:\n")
                 for item in downloading_items:
-                    self.queue_status_text.insert(tk.END, f"  • {item['podcast_name']}: {item['episode_title'][:50]}...\n")
+                    text_content.append(f"  • {item['podcast_name']}: {item['episode_title'][:50]}...\n")
             
             if pending_items:
-                self.queue_status_text.insert(tk.END, f"\nNext {len(pending_items)} in Queue:\n")
+                text_content.append(f"\nNext {len(pending_items)} in Queue:\n")
                 for item in pending_items:
-                    self.queue_status_text.insert(tk.END, f"  • {item['podcast_name']}: {item['episode_title'][:40]}...\n")
+                    text_content.append(f"  • {item['podcast_name']}: {item['episode_title'][:40]}...\n")
             elif status_counts['pending'] == 0 and status_counts['downloading'] == 0:
-                self.queue_status_text.insert(tk.END, "\nAll downloads complete!\n")
+                text_content.append("\nAll downloads complete!\n")
+            
+            # Update UI in one operation
+            self.queue_status_text.delete(1.0, tk.END)
+            self.queue_status_text.insert(tk.END, ''.join(text_content))
+            
         except Exception as e:
             # Silently fail to avoid blocking UI
-            import traceback
-            print(f"Error refreshing queue status: {e}")
-            print(traceback.format_exc())
+            pass
     
     def refresh_failed_downloads(self):
         """Refresh the failed downloads list."""
-        config = load_config()
-        failed = config.get('failed_downloads', [])
-        
-        self.failed_listbox.delete(0, tk.END)
-        
-        for item in failed:
-            display = f"{item['podcast_name']}: {item['episode_title'][:50]}... (Retries: {item.get('retry_count', 0)})"
-            self.failed_listbox.insert(tk.END, display)
+        try:
+            # Use cache if available
+            if self.config_cache:
+                config = self.config_cache
+            else:
+                config = load_config()
+                self.config_cache = config
+            
+            failed = config.get('failed_downloads', [])
+            
+            # Batch listbox updates
+            self.failed_listbox.delete(0, tk.END)
+            displays = []
+            for item in failed:
+                display = f"{item['podcast_name']}: {item['episode_title'][:50]}... (Retries: {item.get('retry_count', 0)})"
+                displays.append(display)
+            
+            # Insert all at once
+            if displays:
+                self.failed_listbox.insert(0, *displays)
+        except Exception:
+            pass  # Silently fail
     
     def add_podcast(self):
         """Add a new podcast subscription."""
@@ -221,74 +261,89 @@ class KatibGUI:
             messagebox.showerror("Error", "Please enter an RSS feed URL")
             return
         
-        # Parse RSS to get podcast name
-        try:
-            episodes, feed_title = parse_rss_feed(rss_url)
-            if not feed_title:
-                feed_title = "Unknown Podcast"
-            
-            podcast_name = feed_title
-            
-            # Confirm if many episodes
-            if len(episodes) > 100:
-                response = messagebox.askyesno(
-                    "Confirm Download",
-                    f"This podcast has {len(episodes)} episodes. Download all now?\n\n"
-                    f"This may take a while and use significant disk space."
-                )
-                if not response:
-                    return
-            
-            # Add to config
-            config = load_config()
-            
-            # Check if already exists
-            for podcast in config.get('podcasts', []):
-                if podcast['rss_url'] == rss_url:
-                    messagebox.showinfo("Info", "This podcast is already subscribed")
-                    return
-            
-            new_podcast = {
-                "name": podcast_name,
-                "rss_url": rss_url,
-                "date_added": datetime.now().strftime('%Y-%m-%d'),
-                "total_episodes": len(episodes),
-                "downloaded_count": 0
-            }
-            
-            config.setdefault('podcasts', []).append(new_podcast)
-            save_config(config)
-            
-            # Queue all episodes
-            self.progress_label.config(text="Adding episodes to queue...")
-            self.root.update()
-            
-            for episode in episodes:
-                queue_item = {
-                    "podcast_name": podcast_name,
-                    "episode_title": episode['title'],
-                    "episode_url": episode['url'],
-                    "published_date": episode['published_date'],
-                    "episode_id": episode.get('episode_id', episode['url']),
-                    "status": "pending",
-                    "retry_count": 0,
-                    "date_added_to_queue": datetime.now().isoformat()
+        # Disable button during processing
+        self.progress_label.config(text="Parsing RSS feed...")
+        
+        def add_in_thread():
+            try:
+                # Parse RSS to get podcast name
+                episodes, feed_title = parse_rss_feed(rss_url)
+                if not feed_title:
+                    feed_title = "Unknown Podcast"
+                
+                podcast_name = feed_title
+                
+                # Confirm if many episodes (in main thread)
+                if len(episodes) > 100:
+                    response = []
+                    def show_confirm():
+                        response.append(messagebox.askyesno(
+                            "Confirm Download",
+                            f"This podcast has {len(episodes)} episodes. Download all now?\n\n"
+                            f"This may take a while and use significant disk space."
+                        ))
+                    self.root.after(0, show_confirm)
+                    # Wait for response
+                    import time
+                    while not response:
+                        time.sleep(0.1)
+                    if not response[0]:
+                        self.root.after(0, lambda: self.progress_label.config(text="Ready"))
+                        return
+                
+                # Add to config
+                config = load_config()
+                
+                # Check if already exists
+                for podcast in config.get('podcasts', []):
+                    if podcast['rss_url'] == rss_url:
+                        self.root.after(0, lambda: messagebox.showinfo("Info", "This podcast is already subscribed"))
+                        self.root.after(0, lambda: self.progress_label.config(text="Ready"))
+                        return
+                
+                new_podcast = {
+                    "name": podcast_name,
+                    "rss_url": rss_url,
+                    "date_added": datetime.now().strftime('%Y-%m-%d'),
+                    "total_episodes": len(episodes),
+                    "downloaded_count": 0
                 }
-                config.setdefault('download_queue', []).append(queue_item)
-            
-            save_config(config)
-            
-            self.rss_url_var.set("")
-            # Schedule UI updates to avoid blocking
-            self.root.after_idle(self.refresh_podcasts)
-            self.root.after_idle(self.refresh_queue_status)
-            
-            messagebox.showinfo("Success", f"Added '{podcast_name}' with {len(episodes)} episodes to download queue")
-            self.progress_label.config(text="Ready")
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to add podcast:\n{str(e)}")
-            self.progress_label.config(text="Error")
+                
+                config.setdefault('podcasts', []).append(new_podcast)
+                save_config(config)
+                
+                # Queue all episodes
+                self.root.after(0, lambda: self.progress_label.config(text=f"Adding {len(episodes)} episodes to queue..."))
+                
+                for episode in episodes:
+                    queue_item = {
+                        "podcast_name": podcast_name,
+                        "episode_title": episode['title'],
+                        "episode_url": episode['url'],
+                        "published_date": episode['published_date'],
+                        "episode_id": episode.get('episode_id', episode['url']),
+                        "status": "pending",
+                        "retry_count": 0,
+                        "date_added_to_queue": datetime.now().isoformat()
+                    }
+                    config.setdefault('download_queue', []).append(queue_item)
+                
+                save_config(config)
+                self.config_cache = None  # Invalidate cache
+                
+                # Update UI in main thread
+                self.root.after(0, lambda: self.rss_url_var.set(""))
+                self.root.after(0, lambda: self.refresh_podcasts(force_reload=True))
+                self.root.after(0, lambda: self.refresh_queue_status(force_reload=True))
+                self.root.after(0, lambda: messagebox.showinfo("Success", f"Added '{podcast_name}' with {len(episodes)} episodes to download queue"))
+                self.root.after(0, lambda: self.progress_label.config(text="Ready"))
+                
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to add podcast:\n{str(e)}"))
+                self.root.after(0, lambda: self.progress_label.config(text="Error"))
+        
+        thread = threading.Thread(target=add_in_thread, daemon=True)
+        thread.start()
     
     def remove_podcast(self):
         """Remove a podcast subscription."""
@@ -321,8 +376,9 @@ class KatibGUI:
             
             save_config(config)
             # Schedule UI updates to avoid blocking
-            self.root.after_idle(self.refresh_podcasts)
-            self.root.after_idle(self.refresh_queue_status)
+            self.config_cache = None
+            self.root.after(50, lambda: self.refresh_podcasts(force_reload=True))
+            self.root.after(50, lambda: self.refresh_queue_status(force_reload=True))
     
     def check_new_episodes_manual(self):
         """Manually check for new episodes."""
@@ -335,18 +391,18 @@ class KatibGUI:
             if index < len(podcasts):
                 podcast = podcasts[index]
                 self.progress_label.config(text=f"Checking {podcast['name']}...")
-                self.root.update()
                 
                 try:
                     new_count = check_new_episodes(podcast['name'], podcast['rss_url'])
-                    self.root.after_idle(self.refresh_queue_status)
+                    self.config_cache = None
+                    self.root.after(50, lambda: self.refresh_queue_status(force_reload=True))
+                    self.root.after(50, lambda: self.refresh_podcasts(force_reload=True))
                     messagebox.showinfo("Check Complete", f"Found {new_count} new episodes")
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to check for new episodes:\n{str(e)}")
         else:
             # Check all podcasts
             self.progress_label.config(text="Checking all podcasts...")
-            self.root.update()
             
             total_new = 0
             for podcast in podcasts:
@@ -358,7 +414,9 @@ class KatibGUI:
             
             config['last_check'] = datetime.now().isoformat()
             save_config(config)
-            self.root.after_idle(self.refresh_queue_status)
+            self.config_cache = None
+            self.root.after(50, lambda: self.refresh_queue_status(force_reload=True))
+            self.root.after(50, lambda: self.refresh_podcasts(force_reload=True))
             messagebox.showinfo("Check Complete", f"Found {total_new} new episodes total")
         
         self.progress_label.config(text="Ready")
@@ -371,8 +429,7 @@ class KatibGUI:
         
         def process_in_thread():
             self.queue_processing = True
-            self.progress_label.config(text="Processing download queue...")
-            self.root.update()
+            self.root.after(0, lambda: self.progress_label.config(text="Processing download queue..."))
             
             try:
                 # Check queue status before processing
@@ -396,10 +453,11 @@ class KatibGUI:
                 
                 completed, failed = process_download_queue()
                 
-                # Force immediate UI refresh with fresh data
-                self.refresh_queue_status()
-                self.refresh_podcasts()
-                self.refresh_failed_downloads()
+                # Force immediate UI refresh with fresh data (schedule in main thread)
+                self.config_cache = None  # Invalidate cache
+                self.root.after(0, lambda: self.refresh_queue_status(force_reload=True))
+                self.root.after(0, lambda: self.refresh_podcasts(force_reload=True))
+                self.root.after(0, self.refresh_failed_downloads)
                 
                 if completed > 0 or failed > 0:
                     message = f"Downloaded {completed} episode(s)"
@@ -459,9 +517,10 @@ class KatibGUI:
         failed.pop(index)
         save_config(config)
         
-        # Schedule UI updates to avoid blocking
-        self.root.after_idle(self.refresh_queue_status)
-        self.root.after_idle(self.refresh_failed_downloads)
+        # Schedule UI updates to avoid blocking (invalidate cache first)
+        self.config_cache = None
+        self.root.after(50, lambda: self.refresh_queue_status(force_reload=True))
+        self.root.after(50, self.refresh_failed_downloads)
         messagebox.showinfo("Success", "Failed download moved back to queue")
     
     def auto_backfill_history(self):
@@ -555,9 +614,19 @@ class KatibGUI:
     
     def periodic_refresh(self):
         """Periodically refresh the UI."""
-        # Schedule refresh in background to avoid blocking
-        self.root.after_idle(self.refresh_queue_status)
-        self.root.after(15000, self.periodic_refresh)  # Refresh every 15 seconds (less frequent)
+        # Only refresh if not already scheduled and not processing
+        if not self.refresh_scheduled and not self.queue_processing:
+            self.refresh_scheduled = True
+            # Use a longer delay and don't force reload (use cache)
+            self.root.after(30000, lambda: self._do_periodic_refresh())  # Refresh every 30 seconds
+    
+    def _do_periodic_refresh(self):
+        """Actually perform the periodic refresh."""
+        self.refresh_scheduled = False
+        if not self.queue_processing:
+            self.refresh_queue_status(force_reload=False)  # Use cache
+            self.refresh_podcasts(force_reload=False)  # Use cache for periodic refresh
+        self.periodic_refresh()  # Schedule next refresh
 
 
 def main():
