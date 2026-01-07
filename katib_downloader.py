@@ -398,12 +398,12 @@ def check_new_episodes(podcast_name, rss_url):
         existing_urls.add(entry.get('episode_url', ''))
         existing_titles.add(entry.get('episode_title', ''))
     
-    # Check if episodes are already downloaded (by filename)
+    # Check if episodes are already downloaded (by checking if expected file exists)
     podcast_dir = PODCASTS_DIR / sanitize_filename(podcast_name)
+    existing_files = set()
     if podcast_dir.exists():
         for file in podcast_dir.glob('*.mp3'):
-            # Extract episode ID from filename if possible, or use filename
-            existing_ids.add(file.stem)
+            existing_files.add(file.name.lower())  # Store lowercase for case-insensitive comparison
     
     # Add new episodes to queue
     new_count = 0
@@ -412,10 +412,25 @@ def check_new_episodes(podcast_name, rss_url):
         episode_url = episode.get('url', '')
         episode_title = episode.get('title', '')
         
-        # Check if already exists by ID, URL, or title
+        # Check if file already exists by trying to create the expected filepath
+        file_exists = False
+        try:
+            filepath, filename = create_safe_filepath(podcast_name, episode_title, episode['published_date'])
+            if filepath.exists() or filename.lower() in existing_files:
+                file_exists = True
+        except Exception as e:
+            # If we can't create the filepath, check by title match in existing files
+            safe_title = sanitize_filename(episode_title, max_length=100)
+            for existing_file in existing_files:
+                if safe_title.lower() in existing_file.lower():
+                    file_exists = True
+                    break
+        
+        # Check if already exists by ID, URL, title, or file existence
         if (episode_id not in existing_ids and 
             episode_url not in existing_urls and 
-            episode_title not in existing_titles):
+            episode_title not in existing_titles and
+            not file_exists):
             queue_item = {
                 "podcast_name": podcast_name,
                 "episode_title": episode['title'],

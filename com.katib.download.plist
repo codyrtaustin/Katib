@@ -16,11 +16,24 @@
         <key>Minute</key>
         <integer>0</integer>
     </dict>
+    <key>Wake</key>
+    <true/>
     <key>StandardOutPath</key>
     <string>/Users/codyaustin/Documents/Katib/logs/launchd_download.log</string>
     <key>StandardErrorPath</key>
     <string>/Users/codyaustin/Documents/Katib/logs/launchd_download_error.log</string>
     <key>RunAtLoad</key>
     <false/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>Nice</key>
+    <integer>1</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Library/Frameworks/Python.framework/Versions/3.11/bin</string>
+        <key>HOME</key>
+        <string>/Users/codyaustin</string>
+    </dict>
 </dict>
 </plist>
