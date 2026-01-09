@@ -42,7 +42,11 @@ class KatibGUI:
         self.queue_processing = False
         self.refresh_scheduled = False  # Prevent multiple refresh calls
         self.config_cache = None  # Cache config to reduce file reads
+        self.config_mtime = None  # Track config file modification time
         self.podcasts_display_cache = None  # Cache podcast display strings to avoid unnecessary updates
+        self.refresh_timer = None  # Track scheduled refresh to debounce
+        self.user_interacting = False  # Track if user is actively interacting with UI
+        self.listbox_update_pending = False  # Track if listbox update is pending
         
         # Setup UI
         self.setup_ui()
@@ -91,6 +95,11 @@ class KatibGUI:
         self.podcasts_listbox = tk.Listbox(podcasts_frame, yscrollcommand=podcasts_scroll.set, height=15)
         self.podcasts_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         podcasts_scroll.config(command=self.podcasts_listbox.yview)
+        
+        # Bind selection event to track user interaction
+        self.podcasts_listbox.bind('<<ListboxSelect>>', self._on_podcast_select)
+        self.podcasts_listbox.bind('<Button-1>', self._on_listbox_click)
+        self.podcasts_listbox.bind('<Key>', self._on_listbox_key)
         
         # Podcasts buttons
         podcasts_btn_frame = ttk.Frame(podcasts_frame)
@@ -144,15 +153,64 @@ class KatibGUI:
         main_frame.rowconfigure(1, weight=1)
         main_frame.rowconfigure(2, weight=1)
     
+    def _get_config_if_changed(self, force_reload=False):
+        """Get config, only reloading if file has changed or forced."""
+        if force_reload:
+            config = load_config()
+            self.config_cache = config
+            try:
+                self.config_mtime = CONFIG_FILE.stat().st_mtime
+            except:
+                self.config_mtime = None
+            return config
+        
+        # Check if file has been modified
+        try:
+            current_mtime = CONFIG_FILE.stat().st_mtime
+            if self.config_mtime is None or current_mtime > self.config_mtime:
+                config = load_config()
+                self.config_cache = config
+                self.config_mtime = current_mtime
+                return config
+        except:
+            pass
+        
+        # Use cache if available
+        if self.config_cache is None:
+            config = load_config()
+            self.config_cache = config
+            try:
+                self.config_mtime = CONFIG_FILE.stat().st_mtime
+            except:
+                self.config_mtime = None
+            return config
+        
+        return self.config_cache
+    
+    def _on_podcast_select(self, event=None):
+        """Handle podcast selection - mark user as interacting."""
+        self.user_interacting = True
+        self.root.after(2000, lambda: setattr(self, 'user_interacting', False))  # Reset after 2 seconds
+    
+    def _on_listbox_click(self, event=None):
+        """Handle listbox click - mark user as interacting."""
+        self.user_interacting = True
+        self.root.after(2000, lambda: setattr(self, 'user_interacting', False))
+    
+    def _on_listbox_key(self, event=None):
+        """Handle listbox keyboard navigation - mark user as interacting."""
+        self.user_interacting = True
+        self.root.after(2000, lambda: setattr(self, 'user_interacting', False))
+    
     def refresh_podcasts(self, force_reload=False):
         """Refresh the podcasts list."""
         try:
-            # Use cache if available and not forcing reload
-            if force_reload or self.config_cache is None:
-                config = load_config()
-                self.config_cache = config
-            else:
-                config = self.config_cache
+            # Skip refresh if user is actively interacting
+            if self.user_interacting and not force_reload:
+                self.listbox_update_pending = True
+                return
+            
+            config = self._get_config_if_changed(force_reload)
             
             podcasts = config.get('podcasts', [])
             displays = []
@@ -165,6 +223,7 @@ class KatibGUI:
             
             # Only update if data actually changed (prevents unnecessary listbox refresh)
             if displays == self.podcasts_display_cache:
+                self.listbox_update_pending = False
                 return  # No changes, skip update
             
             # Preserve selection and scroll position
@@ -172,7 +231,8 @@ class KatibGUI:
             selected_index = selection[0] if selection else None
             scroll_pos = self.podcasts_listbox.yview()
             
-            # Batch listbox updates
+            # Optimize listbox update - use update_idletasks sparingly
+            # Batch listbox updates without disabling (disabling makes it feel unresponsive)
             self.podcasts_listbox.delete(0, tk.END)
             if displays:
                 self.podcasts_listbox.insert(0, *displays)
@@ -187,18 +247,19 @@ class KatibGUI:
             
             # Update cache
             self.podcasts_display_cache = displays
+            self.listbox_update_pending = False
         except Exception:
             pass  # Silently fail
+    
+    def _check_pending_listbox_update(self):
+        """Check if listbox update is pending and user is no longer interacting."""
+        if self.listbox_update_pending and not self.user_interacting:
+            self.refresh_podcasts(force_reload=False)
     
     def refresh_queue_status(self, force_reload=False):
         """Refresh the download queue status display."""
         try:
-            # Use cache if available and not forcing reload
-            if force_reload or self.config_cache is None:
-                config = load_config()
-                self.config_cache = config
-            else:
-                config = self.config_cache
+            config = self._get_config_if_changed(force_reload)
             
             queue = config.get('download_queue', [])
             
@@ -207,7 +268,9 @@ class KatibGUI:
             downloading_items = []
             pending_items = []
             
-            for q in queue:
+            # Limit processing for large queues - only process first 100 items for display
+            queue_limit = min(len(queue), 100)
+            for q in queue[:queue_limit]:
                 status = q.get('status', 'pending')
                 if status == 'downloading':
                     status_counts['downloading'] += 1
@@ -215,11 +278,18 @@ class KatibGUI:
                         downloading_items.append(q)
                 elif status == 'pending':
                     status_counts['pending'] += 1
-                    # Show all pending items (or up to 20 for performance)
-                    if len(pending_items) < 20:
+                    # Show all pending items (or up to 10 for performance)
+                    if len(pending_items) < 10:
                         pending_items.append(q)
                 elif status == 'failed':
                     status_counts['failed'] += 1
+            
+            # Count remaining items beyond limit
+            if len(queue) > queue_limit:
+                for q in queue[queue_limit:]:
+                    status = q.get('status', 'pending')
+                    if status in status_counts:
+                        status_counts[status] += 1
             
             # Update UI efficiently - batch text operations
             text_content = []
@@ -228,12 +298,14 @@ class KatibGUI:
             text_content.append(f"  Downloading: {status_counts['downloading']}\n")
             text_content.append(f"  Failed: {status_counts['failed']}\n\n")
             
-            # Show download history summary (lightweight - just counts)
+            # Show download history summary (lightweight - just counts, limit to 3 for performance)
             history = config.get('download_history', {})
             if history:
                 text_content.append("Download History:\n")
-                for podcast_name, downloads in list(history.items())[:5]:
+                for podcast_name, downloads in list(history.items())[:3]:
                     text_content.append(f"  {podcast_name}: {len(downloads)} total\n")
+                if len(history) > 3:
+                    text_content.append(f"  ... and {len(history) - 3} more podcasts\n")
                 text_content.append("\n")
             
             if downloading_items:
@@ -261,25 +333,23 @@ class KatibGUI:
     def refresh_failed_downloads(self):
         """Refresh the failed downloads list."""
         try:
-            # Use cache if available
-            if self.config_cache:
-                config = self.config_cache
-            else:
-                config = load_config()
-                self.config_cache = config
+            config = self._get_config_if_changed(force_reload=False)
             
             failed = config.get('failed_downloads', [])
             
             # Batch listbox updates
             self.failed_listbox.delete(0, tk.END)
             displays = []
-            for item in failed:
+            # Limit to 50 items for performance
+            for item in failed[:50]:
                 display = f"{item['podcast_name']}: {item['episode_title'][:50]}... (Retries: {item.get('retry_count', 0)})"
                 displays.append(display)
             
             # Insert all at once
             if displays:
                 self.failed_listbox.insert(0, *displays)
+            if len(failed) > 50:
+                self.failed_listbox.insert(tk.END, f"... and {len(failed) - 50} more (use View Queue Details to see all)")
         except Exception:
             pass  # Silently fail
     
@@ -360,11 +430,11 @@ class KatibGUI:
                 
                 save_config(config)
                 self.config_cache = None  # Invalidate cache
+                self.config_mtime = None  # Force reload on next check
                 
-                # Update UI in main thread
+                # Update UI in main thread (debounced)
                 self.root.after(0, lambda: self.rss_url_var.set(""))
-                self.root.after(0, lambda: self.refresh_podcasts(force_reload=True))
-                self.root.after(0, lambda: self.refresh_queue_status(force_reload=True))
+                self.root.after(0, lambda: self._debounced_refresh(1000))
                 self.root.after(0, lambda: messagebox.showinfo("Success", f"Added '{podcast_name}' with {len(episodes)} episodes to download queue"))
                 self.root.after(0, lambda: self.progress_label.config(text="Ready"))
                 
@@ -405,10 +475,10 @@ class KatibGUI:
             config['download_queue'] = [q for q in queue if q['podcast_name'] != podcast['name']]
             
             save_config(config)
-            # Schedule UI updates to avoid blocking
+            # Schedule UI updates to avoid blocking (debounced)
             self.config_cache = None
-            self.root.after(50, lambda: self.refresh_podcasts(force_reload=True))
-            self.root.after(50, lambda: self.refresh_queue_status(force_reload=True))
+            self.config_mtime = None
+            self.root.after(50, lambda: self._debounced_refresh(500))
     
     def check_new_episodes_manual(self):
         """Manually check for new episodes."""
@@ -425,8 +495,8 @@ class KatibGUI:
                 try:
                     new_count = check_new_episodes(podcast['name'], podcast['rss_url'])
                     self.config_cache = None
-                    self.root.after(50, lambda: self.refresh_queue_status(force_reload=True))
-                    self.root.after(50, lambda: self.refresh_podcasts(force_reload=True))
+                    self.config_mtime = None
+                    self.root.after(50, lambda: self._debounced_refresh(500))
                     messagebox.showinfo("Check Complete", f"Found {new_count} new episodes")
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to check for new episodes:\n{str(e)}")
@@ -445,8 +515,8 @@ class KatibGUI:
             config['last_check'] = datetime.now().isoformat()
             save_config(config)
             self.config_cache = None
-            self.root.after(50, lambda: self.refresh_queue_status(force_reload=True))
-            self.root.after(50, lambda: self.refresh_podcasts(force_reload=True))
+            self.config_mtime = None
+            self.root.after(50, lambda: self._debounced_refresh(500))
             messagebox.showinfo("Check Complete", f"Found {total_new} new episodes total")
         
         self.progress_label.config(text="Ready")
@@ -483,10 +553,10 @@ class KatibGUI:
                 
                 completed, failed = process_download_queue()
                 
-                # Force immediate UI refresh with fresh data (schedule in main thread)
+                # Force immediate UI refresh with fresh data (schedule in main thread, debounced)
                 self.config_cache = None  # Invalidate cache
-                self.root.after(0, lambda: self.refresh_queue_status(force_reload=True))
-                self.root.after(0, lambda: self.refresh_podcasts(force_reload=True))
+                self.config_mtime = None
+                self.root.after(0, lambda: self._debounced_refresh(1000))
                 self.root.after(0, self.refresh_failed_downloads)
                 
                 if completed > 0 or failed > 0:
@@ -547,9 +617,10 @@ class KatibGUI:
         failed.pop(index)
         save_config(config)
         
-        # Schedule UI updates to avoid blocking (invalidate cache first)
+        # Schedule UI updates to avoid blocking (invalidate cache first, debounced)
         self.config_cache = None
-        self.root.after(50, lambda: self.refresh_queue_status(force_reload=True))
+        self.config_mtime = None
+        self.root.after(50, lambda: self._debounced_refresh(500))
         self.root.after(50, self.refresh_failed_downloads)
         messagebox.showinfo("Success", "Failed download moved back to queue")
     
@@ -559,7 +630,8 @@ class KatibGUI:
             removed_count = cleanup_duplicate_queue_items()
             if removed_count > 0:
                 self.config_cache = None  # Invalidate cache
-                self.refresh_queue_status(force_reload=True)
+                self.config_mtime = None
+                self._debounced_refresh(500)
                 if not silent:
                     messagebox.showinfo("Cleanup Complete", f"Removed {removed_count} duplicate item(s) from download queue")
             elif not silent:
@@ -606,7 +678,8 @@ class KatibGUI:
             config['download_queue'] = []
             save_config(config)
             self.config_cache = None  # Invalidate cache
-            self.refresh_queue_status(force_reload=True)
+            self.config_mtime = None
+            self._debounced_refresh(500)
             messagebox.showinfo("Queue Cleared", f"Removed {len(queue)} item(s) from download queue.")
     
     def auto_backfill_history(self):
@@ -759,20 +832,36 @@ class KatibGUI:
         close_btn = ttk.Button(queue_window, text="Close", command=queue_window.destroy)
         close_btn.pack(pady=5)
     
+    def _debounced_refresh(self, delay=500):
+        """Schedule a refresh with debouncing to prevent multiple rapid calls."""
+        if self.refresh_timer:
+            self.root.after_cancel(self.refresh_timer)
+        self.refresh_timer = self.root.after(delay, self._do_debounced_refresh)
+    
+    def _do_debounced_refresh(self):
+        """Perform the debounced refresh."""
+        self.refresh_timer = None
+        if not self.queue_processing:
+            self.refresh_queue_status(force_reload=False)
+            self.refresh_podcasts(force_reload=False)
+    
     def periodic_refresh(self):
         """Periodically refresh the UI."""
         # Only refresh if not already scheduled and not processing
         if not self.refresh_scheduled and not self.queue_processing:
             self.refresh_scheduled = True
-            # Use a longer delay and don't force reload (use cache)
-            self.root.after(30000, lambda: self._do_periodic_refresh())  # Refresh every 30 seconds
+            # Use a longer delay (60 seconds) and don't force reload (use cache)
+            self.root.after(60000, lambda: self._do_periodic_refresh())  # Refresh every 60 seconds
     
     def _do_periodic_refresh(self):
         """Actually perform the periodic refresh."""
         self.refresh_scheduled = False
-        if not self.queue_processing:
+        if not self.queue_processing and not self.user_interacting:
             self.refresh_queue_status(force_reload=False)  # Use cache
             self.refresh_podcasts(force_reload=False)  # Use cache for periodic refresh
+        elif self.listbox_update_pending:
+            # Check if we can update now
+            self.root.after(1000, self._check_pending_listbox_update)
         self.periodic_refresh()  # Schedule next refresh
 
 
