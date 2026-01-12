@@ -17,6 +17,11 @@ echo "User: $(whoami)"
 echo "Working Directory: $SCRIPT_DIR"
 echo "=========================================="
 
+# Pull latest code from GitHub
+echo "Pulling latest updates from GitHub..."
+cd "$SCRIPT_DIR" && git pull 2>&1 || echo "Git pull failed (continuing anyway)"
+echo ""
+
 # Use explicit Python path for reliability
 PYTHON3="/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
 
