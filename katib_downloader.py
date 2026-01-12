@@ -371,7 +371,13 @@ def check_new_episodes(podcast_name, rss_url):
         return 0
     
     config = load_config()
-    
+
+    # Update total_episodes count to match current feed
+    for podcast in config.get('podcasts', []):
+        if podcast['name'] == podcast_name:
+            podcast['total_episodes'] = len(episodes)
+            break
+
     # Get existing episode IDs for this podcast
     existing_ids = set()
     existing_urls = set()
