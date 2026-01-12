@@ -48,6 +48,9 @@ Katib is a macOS podcast downloader with a Python GUI. It automates downloading 
 | `backfill_history.py` | Creates history entries for existing downloads |
 | `katib_daily_download.sh` | Shell wrapper for LaunchD automation |
 | `com.katib.download.plist` | LaunchD config (9 AM PT daily) |
+| `katib_cleanup.py` | MP3 cleanup script (deletes transcribed files after 14 days) |
+| `katib_daily_cleanup.sh` | Shell wrapper for cleanup automation |
+| `com.katib.cleanup.plist` | LaunchD config for cleanup (10 PM PT daily) |
 
 ## Config Structure
 ```json
@@ -96,6 +99,11 @@ Katib is a macOS podcast downloader with a Python GUI. It automates downloading 
     - Native Qt event loop (C++ performance)
     - Efficient QListWidget with signal blocking during batch updates
   - Old tkinter version (`katib.py`) kept as backup
+- **MP3 Cleanup Feature**
+  - Created `katib_cleanup.py` to delete MP3s after transcription + 14 days
+  - Added "Cleanup Old MP3s" button to GUI
+  - Created LaunchD plist for daily automated cleanup at 10 PM PT
+  - Fixed `total_episodes` count to update when checking for new episodes
 
 ---
 

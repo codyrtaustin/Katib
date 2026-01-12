@@ -29,6 +29,7 @@ from katib_downloader import (
     process_download_queue, sanitize_filename, parse_rss_feed,
     cleanup_duplicate_queue_items
 )
+from katib_cleanup import cleanup_mp3s, get_cleanup_stats
 
 
 class AddPodcastWorker(QThread):
@@ -396,6 +397,10 @@ class KatibWindow(QMainWindow):
         clear_btn = QPushButton("Clear Queue")
         clear_btn.clicked.connect(self.clear_queue)
         action_layout.addWidget(clear_btn)
+
+        cleanup_mp3_btn = QPushButton("Cleanup Old MP3s")
+        cleanup_mp3_btn.clicked.connect(self.cleanup_old_mp3s)
+        action_layout.addWidget(cleanup_mp3_btn)
 
         status_layout.addLayout(action_layout)
         splitter.addWidget(status_group)
@@ -819,6 +824,53 @@ class KatibWindow(QMainWindow):
             self.config_mtime = None
             self.refresh_all(force_reload=True)
             QMessageBox.information(self, "Queue Cleared", f"Removed {len(queue)} item(s)")
+
+    def cleanup_old_mp3s(self):
+        """Clean up old MP3 files that have been transcribed for 14+ days."""
+        # Get stats first
+        stats = get_cleanup_stats()
+
+        if stats['eligible_count'] == 0:
+            QMessageBox.information(
+                self,
+                "MP3 Cleanup",
+                f"No files ready for cleanup.\n\n"
+                f"Pending (< 14 days): {stats['pending_count']} files\n"
+                f"No transcript yet: {stats['no_transcript_count']} files"
+            )
+            return
+
+        size_mb = stats['eligible_size_bytes'] / 1024 / 1024
+
+        reply = QMessageBox.question(
+            self,
+            "Cleanup Old MP3s",
+            f"Delete {stats['eligible_count']} MP3 files that have been transcribed for 14+ days?\n\n"
+            f"This will free up {size_mb:.1f} MB of disk space.\n\n"
+            f"Pending (< 14 days): {stats['pending_count']} files\n"
+            f"No transcript yet: {stats['no_transcript_count']} files",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            self.status_label.setText("Cleaning up old MP3s...")
+            deleted, size, errors = cleanup_mp3s(dry_run=False)
+
+            if errors:
+                QMessageBox.warning(
+                    self,
+                    "Cleanup Complete",
+                    f"Deleted {deleted} files, freed {size / 1024 / 1024:.1f} MB.\n\n"
+                    f"Errors: {len(errors)}"
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Cleanup Complete",
+                    f"Deleted {deleted} files, freed {size / 1024 / 1024:.1f} MB."
+                )
+
+            self.status_label.setText("Ready")
 
     def show_download_history(self):
         """Show download history window."""
