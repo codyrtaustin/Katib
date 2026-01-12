@@ -9,9 +9,13 @@ export PYTHONUNBUFFERED=1
 # Find the Katib directory
 KATIB_DIR="$HOME/Katib"
 
-# Verify katib.py exists
-if [ ! -f "$KATIB_DIR/katib.py" ]; then
-    osascript -e 'display dialog "Error: Could not find katib.py" buttons {"OK"} default button "OK" with icon stop'
+# Prefer the PySide6 version (katib_qt.py) over tkinter version (katib.py)
+if [ -f "$KATIB_DIR/katib_qt.py" ]; then
+    KATIB_SCRIPT="$KATIB_DIR/katib_qt.py"
+elif [ -f "$KATIB_DIR/katib.py" ]; then
+    KATIB_SCRIPT="$KATIB_DIR/katib.py"
+else
+    osascript -e 'display dialog "Error: Could not find katib_qt.py or katib.py" buttons {"OK"} default button "OK" with icon stop'
     exit 1
 fi
 
@@ -24,4 +28,4 @@ if [ -f "$KATIB_DIR/venv/bin/activate" ]; then
 fi
 
 # Run the application - use exec to replace this process
-exec python3 "$KATIB_DIR/katib.py"
+exec python3 "$KATIB_SCRIPT"
