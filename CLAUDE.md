@@ -117,3 +117,24 @@ Chose PySide6 (Qt) over alternatives:
 
 PySide6 provides native macOS look, mature ecosystem, and excellent performance via signal/slot architecture.
 
+### Power Management Solution (2026-01-13)
+**Problem**: LaunchAgents weren't firing reliably because Mac was sleeping. `pmset` scheduled wakes are unreliable on Apple Silicon.
+
+**Solution**: Configure Mac mini to never sleep (uses ~5W idle, ~$5/year):
+```bash
+sudo pmset -a sleep 0 disksleep 0 displaysleep 20 standby 0 autopoweroff 0
+```
+
+This ensures LaunchAgents always fire at scheduled times. Display still sleeps after 20 min to save screen.
+
+### Session 2 - 2026-01-13
+- **Bug Fix: Download queue race condition**
+  - `check_new_episodes()` was adding items to queue and saving config
+  - `main()` then overwrote it with stale config when saving `last_check`
+  - Fix: Reload config after check loop before saving `last_check`
+  - Location: `katib_downloader.py` line 680
+- **Power Management Fix**
+  - Diagnosed why scheduled downloads weren't running (Mac sleeping)
+  - Configured Mac mini to never sleep via `pmset`
+  - LaunchAgents now fire reliably at 9 AM daily
+
