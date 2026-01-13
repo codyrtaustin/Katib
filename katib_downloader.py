@@ -677,6 +677,8 @@ def main():
             except Exception as e:
                 logger.error(f"Error checking {podcast['name']}: {e}")
         
+        # Reload config to get queue updates from check_new_episodes() before saving last_check
+        config = load_config()
         config['last_check'] = datetime.now().isoformat()
         save_config(config)
         
