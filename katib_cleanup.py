@@ -42,15 +42,10 @@ def get_transcript_path(mp3_path):
     Get the corresponding transcript path for an MP3 file.
 
     MP3: ~/Documents/Katib/podcasts/[Podcast Name]/[Episode].mp3
-    TXT: ~/Documents/Katib/Transcripts/[Podcast Name] TXT/[Episode].txt
+    TXT: ~/Documents/Katib/podcasts/[Podcast Name]/[Episode].txt (same folder)
     """
-    podcast_name = mp3_path.parent.name
-    episode_name = mp3_path.stem  # filename without extension
-
-    transcript_folder = TRANSCRIPTS_DIR / f"{podcast_name} TXT"
-    transcript_file = transcript_folder / f"{episode_name}.txt"
-
-    return transcript_file
+    # Transcript is in the same folder as the MP3, just with .txt extension
+    return mp3_path.with_suffix('.txt')
 
 
 def get_transcript_age_days(transcript_path):
