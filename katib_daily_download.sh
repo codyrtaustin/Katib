@@ -17,6 +17,14 @@ echo "User: $(whoami)"
 echo "Working Directory: $SCRIPT_DIR"
 echo "=========================================="
 
+# Open MacWhisper first so it's ready to detect new files
+echo "Opening MacWhisper to activate watch folders..."
+open -a "MacWhisper"
+echo "Waiting 2 minutes for MacWhisper to initialize..."
+sleep 120
+echo "MacWhisper should now be ready"
+echo ""
+
 # Pull latest code from GitHub
 echo "Pulling latest updates from GitHub..."
 cd "$SCRIPT_DIR" && git pull 2>&1 || echo "Git pull failed (continuing anyway)"
