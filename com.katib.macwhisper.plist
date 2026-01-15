@@ -3,18 +3,18 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.katib.cleanup</string>
+    <string>com.katib.macwhisper</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/codyaustin/Katib/katib_daily_cleanup.sh</string>
+        <string>/Users/codyaustin/Katib/katib_open_macwhisper.sh</string>
     </array>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>22</integer>
+        <integer>8</integer>
         <key>Minute</key>
-        <integer>0</integer>
+        <integer>55</integer>
     </dict>
     <key>RunAtLoad</key>
     <false/>
@@ -25,7 +25,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Library/Frameworks/Python.framework/Versions/3.11/bin</string>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>/Users/codyaustin</string>
     </dict>

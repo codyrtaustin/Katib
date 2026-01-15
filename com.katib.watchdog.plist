@@ -3,21 +3,16 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.katib.cleanup</string>
+    <string>com.katib.watchdog</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/codyaustin/Katib/katib_daily_cleanup.sh</string>
+        <string>/Users/codyaustin/Katib/katib_watchdog.sh</string>
     </array>
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>22</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
+    <key>StartInterval</key>
+    <integer>1800</integer>
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
     <key>KeepAlive</key>
     <false/>
     <key>Nice</key>

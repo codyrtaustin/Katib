@@ -16,12 +16,6 @@
         <key>Minute</key>
         <integer>0</integer>
     </dict>
-    <key>Wake</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Users/codyaustin/Documents/Katib/logs/launchd_download.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/codyaustin/Documents/Katib/logs/launchd_download_error.log</string>
     <key>RunAtLoad</key>
     <false/>
     <key>KeepAlive</key>
