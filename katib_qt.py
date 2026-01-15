@@ -21,6 +21,8 @@ from PySide6.QtGui import QFont
 BASE_DIR = Path.home() / "Documents" / "Katib"
 CONFIG_FILE = BASE_DIR / "config" / "katib_config.json"
 PODCASTS_DIR = BASE_DIR / "podcasts"
+LOGS_DIR = BASE_DIR / "logs"
+AUTOMATION_LOG = LOGS_DIR / "launchd_download.log"
 
 # Import downloader functions
 sys.path.insert(0, str(Path(__file__).parent))
@@ -472,6 +474,7 @@ class KatibWindow(QMainWindow):
         self.cleanup_duplicates(silent=True)
         self.refresh_queue_status(force_reload=True)
         self.refresh_failed_downloads()
+        self.refresh_logs()
         self.auto_backfill_history()
 
         # Setup file watcher for config changes
@@ -581,9 +584,13 @@ class KatibWindow(QMainWindow):
 
         main_layout.addWidget(splitter, 1)
 
-        # Failed Downloads Section
-        failed_group = QGroupBox("Failed Downloads")
-        failed_layout = QVBoxLayout(failed_group)
+        # Bottom section with tabs for Failed Downloads and Logs
+        bottom_tabs = QTabWidget()
+
+        # Failed Downloads Tab
+        failed_widget = QWidget()
+        failed_layout = QVBoxLayout(failed_widget)
+        failed_layout.setContentsMargins(5, 5, 5, 5)
 
         self.failed_list = QListWidget()
         self.failed_list.setFont(QFont(".AppleSystemUIFont", 11))
@@ -593,23 +600,62 @@ class KatibWindow(QMainWindow):
         retry_btn.clicked.connect(self.retry_failed)
         failed_layout.addWidget(retry_btn)
 
-        main_layout.addWidget(failed_group)
+        bottom_tabs.addTab(failed_widget, "Failed Downloads")
+
+        # Automation Logs Tab
+        logs_widget = QWidget()
+        logs_layout = QVBoxLayout(logs_widget)
+        logs_layout.setContentsMargins(5, 5, 5, 5)
+
+        self.logs_text = QTextEdit()
+        self.logs_text.setReadOnly(True)
+        self.logs_text.setFont(QFont("Monaco", 10))
+        self.logs_text.setLineWrapMode(QTextEdit.NoWrap)
+        logs_layout.addWidget(self.logs_text)
+
+        logs_btn_layout = QHBoxLayout()
+        refresh_logs_btn = QPushButton("Refresh Logs")
+        refresh_logs_btn.clicked.connect(self.refresh_logs)
+        logs_btn_layout.addWidget(refresh_logs_btn)
+
+        clear_logs_btn = QPushButton("Clear Log File")
+        clear_logs_btn.clicked.connect(self.clear_logs)
+        logs_btn_layout.addWidget(clear_logs_btn)
+
+        logs_btn_layout.addStretch()
+        logs_layout.addLayout(logs_btn_layout)
+
+        bottom_tabs.addTab(logs_widget, "Automation Logs")
+
+        main_layout.addWidget(bottom_tabs)
 
     def setup_file_watcher(self):
-        """Setup file system watcher for config changes."""
+        """Setup file system watcher for config and log changes."""
         self.config_watcher = QFileSystemWatcher()
         if CONFIG_FILE.exists():
             self.config_watcher.addPath(str(CONFIG_FILE))
-        self.config_watcher.fileChanged.connect(self.on_config_changed)
+        if AUTOMATION_LOG.exists():
+            self.config_watcher.addPath(str(AUTOMATION_LOG))
+        # Watch heartbeat files too
+        for hb_file in LOGS_DIR.glob("heartbeat_*.txt"):
+            self.config_watcher.addPath(str(hb_file))
+        self.config_watcher.fileChanged.connect(self.on_file_changed)
 
-    def on_config_changed(self, path):
-        """Handle config file changes."""
+    def on_file_changed(self, path):
+        """Handle config or log file changes."""
         # Re-add the path (Qt removes it after change)
         if CONFIG_FILE.exists():
             self.config_watcher.addPath(str(CONFIG_FILE))
+        if AUTOMATION_LOG.exists():
+            self.config_watcher.addPath(str(AUTOMATION_LOG))
+        for hb_file in LOGS_DIR.glob("heartbeat_*.txt"):
+            self.config_watcher.addPath(str(hb_file))
 
-        # Refresh UI with slight delay to avoid race conditions
-        QTimer.singleShot(100, lambda: self.refresh_all(force_reload=True))
+        # Check which file changed and refresh accordingly
+        if path == str(CONFIG_FILE):
+            QTimer.singleShot(100, lambda: self.refresh_all(force_reload=True))
+        elif path == str(AUTOMATION_LOG) or "heartbeat_" in path:
+            QTimer.singleShot(100, self.refresh_logs)
 
     def get_config(self, force_reload=False):
         """Get config, only reloading if file has changed or forced."""
@@ -757,6 +803,75 @@ class KatibWindow(QMainWindow):
 
         except Exception:
             pass
+
+    def refresh_logs(self):
+        """Refresh the automation logs display."""
+        try:
+            content_parts = []
+
+            # Show heartbeat status at the top
+            heartbeat_download = LOGS_DIR / "heartbeat_download.txt"
+            heartbeat_macwhisper = LOGS_DIR / "heartbeat_macwhisper.txt"
+
+            content_parts.append("=== Automation Heartbeats ===")
+            if heartbeat_download.exists():
+                ts = heartbeat_download.read_text().strip()
+                content_parts.append(f"Last Download Run: {ts}")
+            else:
+                content_parts.append("Last Download Run: Never")
+
+            if heartbeat_macwhisper.exists():
+                ts = heartbeat_macwhisper.read_text().strip()
+                content_parts.append(f"Last MacWhisper Open: {ts}")
+            else:
+                content_parts.append("Last MacWhisper Open: Never")
+
+            content_parts.append("")
+            content_parts.append("=== Automation Logs ===")
+            content_parts.append("")
+
+            # Show main automation log
+            if AUTOMATION_LOG.exists():
+                log_content = AUTOMATION_LOG.read_text(encoding='utf-8', errors='replace')
+                # Show last 500 lines to avoid memory issues with large logs
+                lines = log_content.splitlines()
+                if len(lines) > 500:
+                    lines = lines[-500:]
+                    content_parts.append("[... showing last 500 lines ...]")
+                    content_parts.append("")
+                content_parts.extend(lines)
+            else:
+                content_parts.append("No automation logs found yet.")
+                content_parts.append("")
+                content_parts.append("Logs will appear here after the daily download runs at 9 AM.")
+
+            self.logs_text.setPlainText('\n'.join(content_parts))
+            # Scroll to bottom to show latest logs
+            scrollbar = self.logs_text.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+        except Exception as e:
+            self.logs_text.setPlainText(f"Error reading logs: {e}")
+
+    def clear_logs(self):
+        """Clear the automation log file."""
+        if not AUTOMATION_LOG.exists():
+            QMessageBox.information(self, "Clear Logs", "No log file to clear.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Clear Logs",
+            "Clear all automation logs?\n\nThis cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            try:
+                AUTOMATION_LOG.write_text("")
+                self.refresh_logs()
+                QMessageBox.information(self, "Logs Cleared", "Automation logs have been cleared.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to clear logs:\n{e}")
 
     def add_podcast(self):
         """Add a new podcast subscription."""
