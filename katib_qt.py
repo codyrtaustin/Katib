@@ -220,6 +220,176 @@ class HistoryDialog(QDialog):
         layout.addWidget(close_btn)
 
 
+class LogViewerDialog(QDialog):
+    """Dialog showing system logs."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("System Logs")
+        self.resize(1000, 700)
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Info label
+        info_label = QLabel("Logs are stored in ~/Documents/Katib/logs/")
+        info_label.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(info_label)
+
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        logs_dir = Path.home() / "Documents" / "Katib" / "logs"
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        # Define log categories
+        log_types = [
+            ("Download", f"download_{today}.log", "Daily download script logs"),
+            ("Watchdog", f"watchdog_{today}.log", "Watchdog monitoring logs"),
+            ("Cleanup", f"cleanup_{today}.log", "MP3 cleanup logs"),
+            ("Cron Backup", "cron_backup.log", "Cron failsafe logs"),
+            ("MacWhisper", f"macwhisper_{today}.log", "MacWhisper opener logs"),
+            ("Heartbeats", None, "Task completion timestamps"),
+        ]
+
+        for tab_name, filename, description in log_types:
+            tab_widget = QWidget()
+            tab_layout = QVBoxLayout(tab_widget)
+
+            desc_label = QLabel(description)
+            desc_label.setStyleSheet("color: gray; font-size: 11px;")
+            tab_layout.addWidget(desc_label)
+
+            text_widget = QTextEdit()
+            text_widget.setReadOnly(True)
+            text_widget.setFont(QFont("Monaco", 10))
+
+            if tab_name == "Heartbeats":
+                # Show heartbeat files
+                content = self.get_heartbeat_content(logs_dir)
+            else:
+                content = self.get_log_content(logs_dir, filename)
+
+            text_widget.setPlainText(content)
+            tab_layout.addWidget(text_widget)
+
+            tabs.addTab(tab_widget, tab_name)
+
+        # Button row
+        btn_layout = QHBoxLayout()
+
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(lambda: self.refresh_logs(tabs, logs_dir, today))
+        btn_layout.addWidget(refresh_btn)
+
+        open_folder_btn = QPushButton("Open Logs Folder")
+        open_folder_btn.clicked.connect(lambda: self.open_logs_folder(logs_dir))
+        btn_layout.addWidget(open_folder_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(close_btn)
+
+        layout.addLayout(btn_layout)
+
+    def get_log_content(self, logs_dir, filename):
+        """Get content of a log file."""
+        if not filename:
+            return "No log file specified"
+
+        log_path = logs_dir / filename
+        if not log_path.exists():
+            # Try to find recent log files with similar pattern
+            base_name = filename.rsplit('_', 1)[0] if '_' in filename else filename.replace('.log', '')
+            recent_logs = sorted(logs_dir.glob(f"{base_name}*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+            if recent_logs:
+                log_path = recent_logs[0]
+                header = f"[Showing most recent: {log_path.name}]\n\n"
+            else:
+                return f"No log file found: {filename}\n\nThis log will be created when the task runs."
+        else:
+            header = ""
+
+        try:
+            content = log_path.read_text()
+            if not content.strip():
+                return f"{header}Log file is empty."
+            # Show last 500 lines max
+            lines = content.split('\n')
+            if len(lines) > 500:
+                content = '\n'.join(lines[-500:])
+                header = f"[Showing last 500 lines of {len(lines)} total]\n\n" + header
+            return header + content
+        except Exception as e:
+            return f"Error reading log: {e}"
+
+    def get_heartbeat_content(self, logs_dir):
+        """Get content of heartbeat files."""
+        heartbeat_files = sorted(logs_dir.glob("heartbeat_*.txt"))
+
+        if not heartbeat_files:
+            return "No heartbeat files found.\n\nHeartbeat files are created when tasks complete successfully."
+
+        lines = ["Heartbeat Status (last successful run times):", "=" * 50, ""]
+
+        for hb_file in heartbeat_files:
+            task_name = hb_file.stem.replace('heartbeat_', '')
+            try:
+                timestamp = hb_file.read_text().strip()
+                lines.append(f"{task_name.capitalize():15} : {timestamp}")
+            except:
+                lines.append(f"{task_name.capitalize():15} : Error reading file")
+
+        lines.append("")
+        lines.append("=" * 50)
+        lines.append("")
+        lines.append("Today's date: " + datetime.now().strftime('%Y-%m-%d'))
+        lines.append("")
+
+        # Check if tasks ran today
+        today = datetime.now().strftime('%Y-%m-%d')
+        for hb_file in heartbeat_files:
+            task_name = hb_file.stem.replace('heartbeat_', '')
+            try:
+                timestamp = hb_file.read_text().strip()
+                if timestamp.startswith(today):
+                    lines.append(f"[OK] {task_name} ran today")
+                else:
+                    lines.append(f"[!!] {task_name} did NOT run today (last: {timestamp.split()[0]})")
+            except:
+                lines.append(f"[??] {task_name} status unknown")
+
+        return '\n'.join(lines)
+
+    def refresh_logs(self, tabs, logs_dir, today):
+        """Refresh all log tabs."""
+        log_types = [
+            ("Download", f"download_{today}.log"),
+            ("Watchdog", f"watchdog_{today}.log"),
+            ("Cleanup", f"cleanup_{today}.log"),
+            ("Cron Backup", "cron_backup.log"),
+            ("MacWhisper", f"macwhisper_{today}.log"),
+            ("Heartbeats", None),
+        ]
+
+        for i, (tab_name, filename) in enumerate(log_types):
+            tab_widget = tabs.widget(i)
+            text_widget = tab_widget.findChild(QTextEdit)
+            if text_widget:
+                if tab_name == "Heartbeats":
+                    content = self.get_heartbeat_content(logs_dir)
+                else:
+                    content = self.get_log_content(logs_dir, filename)
+                text_widget.setPlainText(content)
+
+    def open_logs_folder(self, logs_dir):
+        """Open the logs folder in Finder."""
+        import subprocess
+        subprocess.run(['open', str(logs_dir)])
+
+
 class QueueDetailsDialog(QDialog):
     """Dialog showing queue details."""
 
@@ -401,6 +571,10 @@ class KatibWindow(QMainWindow):
         cleanup_mp3_btn = QPushButton("Cleanup Old MP3s")
         cleanup_mp3_btn.clicked.connect(self.cleanup_old_mp3s)
         action_layout.addWidget(cleanup_mp3_btn)
+
+        logs_btn = QPushButton("View Logs")
+        logs_btn.clicked.connect(self.show_logs)
+        action_layout.addWidget(logs_btn)
 
         status_layout.addLayout(action_layout)
         splitter.addWidget(status_group)
@@ -880,6 +1054,11 @@ class KatibWindow(QMainWindow):
     def show_queue_details(self):
         """Show detailed queue view."""
         dialog = QueueDetailsDialog(self)
+        dialog.exec()
+
+    def show_logs(self):
+        """Show system logs viewer."""
+        dialog = LogViewerDialog(self)
         dialog.exec()
 
     def auto_backfill_history(self):
