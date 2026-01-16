@@ -29,5 +29,9 @@
         <key>HOME</key>
         <string>/Users/codyaustin</string>
     </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/codyaustin/Documents/Katib/logs/launchd_download.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/codyaustin/Documents/Katib/logs/launchd_download_error.log</string>
 </dict>
 </plist>

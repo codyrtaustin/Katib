@@ -14,9 +14,9 @@ LOG_FILE="$LOG_DIR/download_$(date '+%Y-%m-%d').log"
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
 
-# Helper function for logging
+# Helper function for logging (writes to both dated file and stdout for launchd capture)
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
 notify() {
@@ -40,7 +40,7 @@ notify "Download script started"
 
 # Pull latest code from GitHub
 log "Pulling latest updates from GitHub..."
-cd "$SCRIPT_DIR" && git pull >> "$LOG_FILE" 2>&1 || log "Git pull failed (continuing anyway)"
+cd "$SCRIPT_DIR" && git pull 2>&1 | tee -a "$LOG_FILE" || log "Git pull failed (continuing anyway)"
 
 # Use explicit Python path for reliability
 PYTHON3="/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
@@ -67,7 +67,7 @@ OUTPUT=$("$PYTHON3" "$PYTHON_SCRIPT" --all 2>&1)
 EXIT_CODE=$?
 
 # Log output
-echo "$OUTPUT" >> "$LOG_FILE"
+echo "$OUTPUT" | tee -a "$LOG_FILE"
 
 # Count downloaded episodes from output
 DOWNLOADED_COUNT=$(echo "$OUTPUT" | grep -c "Successfully downloaded:")
