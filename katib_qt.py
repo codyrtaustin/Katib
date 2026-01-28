@@ -5,9 +5,13 @@ Fast, native GUI interface for managing podcast subscriptions and downloads.
 """
 
 import sys
+import logging
+import subprocess
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlparse
 
+from dateutil import parser as date_parser
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton, QListWidget,
@@ -19,6 +23,11 @@ from PySide6.QtGui import QFont
 
 # Configuration
 BASE_DIR = Path.home() / "Documents" / "Katib"
+LOGS_DIR = BASE_DIR / "logs"
+
+# Setup logging
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+logger = logging.getLogger(__name__)
 CONFIG_FILE = BASE_DIR / "config" / "katib_config.json"
 PODCASTS_DIR = BASE_DIR / "podcasts"
 LOGS_DIR = BASE_DIR / "logs"
@@ -154,8 +163,8 @@ class CheckEpisodesWorker(QThread):
                     try:
                         new_count = check_new_episodes(podcast['name'], podcast['rss_url'])
                         total_new += new_count
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed to check {podcast['name']}: {e}")
                 config['last_check'] = datetime.now().isoformat()
                 save_config(config)
                 self.finished.emit(total_new)
@@ -203,10 +212,10 @@ class HistoryDialog(QDialog):
             for i, download in enumerate(sorted_downloads, 1):
                 downloaded_at = download.get('downloaded_at', 'Unknown')
                 try:
-                    from dateutil import parser as date_parser
                     dt = date_parser.parse(downloaded_at)
                     date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
-                except:
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Could not parse date '{downloaded_at}': {e}")
                     date_str = downloaded_at
 
                 content.append(f"{i}. {download.get('episode_title', 'Unknown')}\n")
@@ -388,7 +397,6 @@ class LogViewerDialog(QDialog):
 
     def open_logs_folder(self, logs_dir):
         """Open the logs folder in Finder."""
-        import subprocess
         subprocess.run(['open', str(logs_dir)])
 
 
@@ -663,7 +671,8 @@ class KatibWindow(QMainWindow):
             self.config_cache = load_config()
             try:
                 self.config_mtime = CONFIG_FILE.stat().st_mtime
-            except:
+            except OSError as e:
+                logger.debug(f"Could not get config mtime: {e}")
                 self.config_mtime = None
             return self.config_cache
 
@@ -673,14 +682,15 @@ class KatibWindow(QMainWindow):
                 self.config_cache = load_config()
                 self.config_mtime = current_mtime
                 return self.config_cache
-        except:
-            pass
+        except OSError as e:
+            logger.debug(f"Could not check config mtime: {e}")
 
         if self.config_cache is None:
             self.config_cache = load_config()
             try:
                 self.config_mtime = CONFIG_FILE.stat().st_mtime
-            except:
+            except OSError as e:
+                logger.debug(f"Could not get config mtime: {e}")
                 self.config_mtime = None
 
         return self.config_cache
@@ -723,8 +733,8 @@ class KatibWindow(QMainWindow):
             self.podcasts_list.blockSignals(False)
             self.podcasts_display_cache = displays
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to refresh podcasts list: {e}")
 
     def refresh_queue_status(self, force_reload=False):
         """Refresh the download queue status display."""
@@ -783,8 +793,8 @@ class KatibWindow(QMainWindow):
 
             self.queue_status.setPlainText('\n'.join(lines))
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to refresh queue status: {e}")
 
     def refresh_failed_downloads(self):
         """Refresh the failed downloads list."""
@@ -801,8 +811,8 @@ class KatibWindow(QMainWindow):
             if len(failed) > 50:
                 self.failed_list.addItem(f"... and {len(failed) - 50} more")
 
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to refresh failed downloads list: {e}")
 
     def refresh_logs(self):
         """Refresh the automation logs display."""
@@ -879,6 +889,15 @@ class KatibWindow(QMainWindow):
 
         if not rss_url:
             QMessageBox.warning(self, "Error", "Please enter an RSS feed URL")
+            return
+
+        # Validate URL format (moderate validation)
+        parsed = urlparse(rss_url)
+        if parsed.scheme not in ('http', 'https'):
+            QMessageBox.warning(self, "Invalid URL", "URL must start with http:// or https://")
+            return
+        if not parsed.netloc or '.' not in parsed.netloc:
+            QMessageBox.warning(self, "Invalid URL", "Please enter a valid URL with a domain (e.g., https://example.com/feed)")
             return
 
         self.status_label.setText("Parsing RSS feed...")
@@ -1189,16 +1208,17 @@ class KatibWindow(QMainWindow):
                 if podcasts_dir.exists():
                     mp3_count = len(list(podcasts_dir.rglob('*.mp3')))
                     if mp3_count > 0:
-                        import subprocess
                         backfill_script = Path(__file__).parent / 'backfill_history.py'
+                        # Fire-and-forget: backfill runs in background, UI refreshes via timer
+                        # This only runs once when history is empty (first launch or reset)
                         subprocess.Popen(
                             ['python3', str(backfill_script)],
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL
                         )
                         QTimer.singleShot(2000, lambda: self.refresh_queue_status(force_reload=True))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to auto-backfill history: {e}")
 
     def periodic_refresh(self):
         """Periodic UI refresh."""

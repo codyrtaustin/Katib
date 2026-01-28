@@ -5,14 +5,18 @@ This script scans the podcasts directory and creates history entries for existin
 """
 
 import json
+import logging
+import re
 import sys
 from pathlib import Path
 from datetime import datetime
-import re
 
 # Import from katib_downloader
 sys.path.insert(0, str(Path(__file__).parent))
-from katib_downloader import load_config, save_config, BASE_DIR, PODCASTS_DIR, CONFIG_FILE
+from katib_downloader import load_config, save_config, BASE_DIR, PODCASTS_DIR, CONFIG_FILE, LOGS_DIR
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 def extract_episode_info(filename):
     """Extract podcast name, date, and title from filename.
@@ -98,7 +102,8 @@ def backfill_history():
             try:
                 mtime = mp3_file.stat().st_mtime
                 downloaded_at = datetime.fromtimestamp(mtime).isoformat()
-            except:
+            except OSError as e:
+                logger.debug(f"Could not get mtime for {mp3_file.name}: {e}")
                 downloaded_at = datetime.now().isoformat()
             
             # Use today's date if extraction failed

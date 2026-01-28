@@ -5,17 +5,22 @@ Handles RSS feed checking, download queue processing, and file downloads.
 Can run independently of the GUI for automation.
 """
 
+import argparse
+import hashlib
 import json
+import logging
 import os
+import re
+import subprocess
 import sys
 import time
-import logging
-import requests
+
 import feedparser
-from pathlib import Path
+import requests
+from dateutil import parser as date_parser
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
-import argparse
 
 # Configuration
 BASE_DIR = Path.home() / "Documents" / "Katib"
@@ -107,7 +112,6 @@ def create_safe_filepath(podcast_name, episode_title, published_date, base_dir=P
     full_path = str(filepath)
     if len(full_path) > 1024:
         # Emergency truncation - use a hash for very long paths
-        import hashlib
         title_hash = hashlib.md5(episode_title.encode()).hexdigest()[:8]
         safe_title = f"{safe_title[:50]}...{title_hash}" if len(safe_title) > 50 else safe_title
         filename = f"{safe_podcast} - {date_part} - {safe_title}.mp3"
@@ -209,7 +213,6 @@ def parse_rss_feed(rss_url):
                 # Some feeds put audio URLs in the content/summary
                 content = getattr(entry, 'content', [{}])[0].get('value', '') if hasattr(entry, 'content') else ''
                 summary = getattr(entry, 'summary', '')
-                import re
                 # Look for audio file URLs in content
                 for text in [content, summary]:
                     if text:
@@ -234,10 +237,10 @@ def parse_rss_feed(rss_url):
             if not published_date and hasattr(entry, 'published'):
                 try:
                     # Try parsing the published string
-                    from dateutil import parser as date_parser
                     dt = date_parser.parse(entry.published)
                     published_date = dt.strftime('%Y-%m-%d')
-                except:
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Could not parse published date '{entry.published}': {e}")
                     published_date = datetime.now().strftime('%Y-%m-%d')
             
             if not published_date:
@@ -269,7 +272,8 @@ def check_disk_space(required_bytes):
         stat = os.statvfs(BASE_DIR)
         free_bytes = stat.f_bavail * stat.f_frsize
         return free_bytes >= required_bytes
-    except:
+    except OSError as e:
+        logger.debug(f"Could not check disk space: {e}")
         return True  # Assume OK if we can't check
 
 
@@ -561,7 +565,6 @@ def process_download_queue():
                 # Path is too long, need to use shorter filename
                 logger.warning(f"Path too long, using shorter filename: {e}")
                 # Use hash-based filename as fallback
-                import hashlib
                 title_hash = hashlib.md5(episode_title.encode()).hexdigest()[:12]
                 safe_podcast = sanitize_filename(podcast_name, max_length=50)
                 filename = f"{safe_podcast} - {published_date} - {title_hash}.mp3"
@@ -625,12 +628,12 @@ def process_download_queue():
             else:
                 item['status'] = 'pending'
                 logger.warning(f"Download failed (attempt {item['retry_count']}/{MAX_RETRIES}): {filename}")
-            
+
         finally:
             save_config(config)
             # Small delay between downloads
             time.sleep(1)
-    
+
     # Clean up completed items from queue (keep only pending/downloading/failed)
     # This keeps the queue clean and shows only active items
     config = load_config()
@@ -640,15 +643,18 @@ def process_download_queue():
     if len(config['download_queue']) < original_count:
         save_config(config)
         logger.info(f"Cleaned {original_count - len(config['download_queue'])} completed items from queue")
-    
+
     return completed, failed
 
 
 def send_notification(title, message):
     """Send macOS notification."""
     try:
-        script = f'display notification "{message}" with title "{title}"'
-        os.system(f'osascript -e \'{script}\'')
+        subprocess.run(
+            ['osascript', '-e', f'display notification "{message}" with title "{title}"'],
+            capture_output=True,
+            check=False
+        )
     except Exception as e:
         logger.warning(f"Could not send notification: {e}")
 
