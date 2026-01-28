@@ -3,11 +3,14 @@
 # Shell script launcher that ensures proper GUI display on macOS
 
 # Set up environment
-export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+export PATH="/Library/Frameworks/Python.framework/Versions/3.11/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 export PYTHONUNBUFFERED=1
 
 # Find the Katib directory
 KATIB_DIR="$HOME/Katib"
+
+# Use Python 3.11 which has PySide6 installed
+PYTHON3="/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
 
 # Prefer the PySide6 version (katib_qt.py) over tkinter version (katib.py)
 if [ -f "$KATIB_DIR/katib_qt.py" ]; then
@@ -22,10 +25,5 @@ fi
 # Change to Katib directory
 cd "$KATIB_DIR" || exit 1
 
-# Activate virtual environment if it exists
-if [ -f "$KATIB_DIR/venv/bin/activate" ]; then
-    source "$KATIB_DIR/venv/bin/activate"
-fi
-
 # Run the application - use exec to replace this process
-exec python3 "$KATIB_SCRIPT"
+exec "$PYTHON3" "$KATIB_SCRIPT"
